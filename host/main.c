@@ -67,7 +67,18 @@ static void *game_main(void *arg) {
 
 #if defined(__EMSCRIPTEN__) && !defined(RC_NODE_BUILD)
 #include <emscripten/wasmfs.h>
+#include <emscripten/em_asm.h>
 #endif
+
+/* The game can't start (1: no game folder, 2: no readable executable). In the browser main() returning
+   ends nothing (the runtime stays up) and no frame ever comes, so the page would keep its loading screen
+   for ever: tell it (web/loader.js: rcStartFailed). */
+static int start_failed(int why) {
+#if defined(__EMSCRIPTEN__) && !defined(RC_NODE_BUILD)
+    MAIN_THREAD_ASYNC_EM_ASM({ if (Module.rcStartFailed) Module.rcStartFailed($0); }, why);
+#endif
+    return 1;
+}
 
 int main(int argc, char **argv) {
 #if defined(__EMSCRIPTEN__) && !defined(RC_NODE_BUILD)
@@ -75,7 +86,7 @@ int main(int argc, char **argv) {
     wasmfs_create_directory("/opfs", 0777, wasmfs_create_opfs_backend());
 #endif
     const char *game = argc > 1 ? argv[1] : "game";
-    if (!realpath(game, g_game_root)) { perror(game); return 1; }
+    if (!realpath(game, g_game_root)) { perror(game); return start_failed(1); }
     /* RC_USERDATA: another folder for saves and settings (e.g. a fresh copy per test run) */
     if (getenv("RC_USERDATA")) snprintf(g_user_root, sizeof g_user_root, "%s", getenv("RC_USERDATA"));
     else snprintf(g_user_root, sizeof g_user_root, "%s/../userdata", g_game_root);
@@ -96,7 +107,7 @@ int main(int argc, char **argv) {
     vclock_init();
     char exe[1100];
     snprintf(exe, sizeof exe, "%s/%s", g_game_root, getenv("RC_EXE") ? getenv("RC_EXE") : PROFILE_EXE);
-    if (load_image(exe, &g_img)) return 1;
+    if (load_image(exe, &g_img)) return start_failed(2);
     register_all_functions();
     fprintf(stderr, "loaded %s: %u imports, %u of them implemented\n", exe, g_img.num_imports, n);
 

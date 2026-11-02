@@ -322,6 +322,15 @@ async function run(session) {
     // a fatal error on any game thread (out of memory, a missing file, a deadlock): without this the page
     // just keeps showing the last frame, or nothing, for ever
     onAbort: (what) => fail(new Error(`The game stopped (${what || 'fatal error'}). Reload the page to try again.`)),
+    // host/main.c: the game files in this browser's storage are gone or incomplete (storage cleared or
+    // evicted, an import cut short) although the marker says they're installed. Forget the install so the
+    // next visit asks for the folder again, rather than loading for ever.
+    rcStartFailed: async (why) => {
+      try { await (await gameDir(false)).removeEntry(MARKER); } catch { /* nothing to forget */ }
+      fail(new Error((why === 1 ? 'The game folder is missing from this browser\'s storage.'
+        : 'The game\'s executable is missing or incomplete in this browser\'s storage.') +
+        ' Reload the page and choose your Cricket 07 folder again.'));
+    },
   });
   const canvas = $('canvas');
   M._rc_gpu_init(canvas.width, canvas.height);
