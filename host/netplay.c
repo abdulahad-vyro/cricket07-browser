@@ -125,6 +125,10 @@ static void inputs_changed(void) {
 
 static void store_input(int slot, uint32_t frame, uint32_t buttons, const int32_t axis[4], uint32_t dt_us) {
     NpInput *e = &g_in[slot][frame % NP_RING];
+    /* An old frame must not take the place of a newer one: after a reconnect the peer resends up to 600
+       batches (web/netplay.js: history), and frame f - NP_RING landing on frame f's entry would leave the
+       game waiting forever for an input that already came and won't come again. */
+    if (__atomic_load_n(&e->frame, __ATOMIC_ACQUIRE) > frame) return;
     e->buttons = buttons;
     e->dt_us = dt_us;
     for (int i = 0; i < 4; i++) e->axis[i] = axis[i];

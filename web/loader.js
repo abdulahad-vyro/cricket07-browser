@@ -276,6 +276,27 @@ function showNetStatus(M, session) {
   }, 1000);
 }
 
+// The game thread waits in rec_init until the page has a WebGPU device, and no frame is shown before
+// that, so a device that can't be had (or is lost later, e.g. when the GPU process crashes) must be said
+// here or the page waits for ever. Chrome blocks WebGPU for a site for a while after its GPU process
+// crashed, which a browser restart clears.
+const GPU_ADVICE = 'Restart the browser (a graphics crash can block WebGPU until then), check that hardware ' +
+  'acceleration is on, and close other tabs that use the GPU.';
+function watchGpu(M) {
+  const t0 = performance.now();
+  let slow = false;
+  const timer = setInterval(() => {
+    const state = M._rc_gpu_state();
+    if (state === -1) { clearInterval(timer); fail(new Error('The browser could not start WebGPU for the game. ' + GPU_ADVICE)); }
+    else if (state === -2) { clearInterval(timer); fail(new Error('The graphics device was lost. Reload the page; if it keeps happening: ' + GPU_ADVICE)); }
+    else if (state === 1 && slow) { slow = false; $('panel').classList.add('hidden'); }   // it came after all
+    else if (state === 0 && !slow && performance.now() - t0 > 20000) {
+      slow = true;
+      fail(new Error('Graphics are taking unusually long to start. ' + GPU_ADVICE));
+    }
+  }, 500);
+}
+
 async function run(session) {
   $('panel').classList.add('hidden');
   fullscreenTip();
@@ -298,9 +319,13 @@ async function run(session) {
       m.ENV.RC_LOG_FPS = params.has('fps') ? '1' : '';
       if (!params.has('fps')) delete m.ENV.RC_LOG_FPS;
     }],
+    // a fatal error on any game thread (out of memory, a missing file, a deadlock): without this the page
+    // just keeps showing the last frame, or nothing, for ever
+    onAbort: (what) => fail(new Error(`The game stopped (${what || 'fatal error'}). Reload the page to try again.`)),
   });
   const canvas = $('canvas');
   M._rc_gpu_init(canvas.width, canvas.height);
+  watchGpu(M);
   new ResizeObserver(() => { sizeCanvas(); M._rc_set_canvas_size(canvas.width, canvas.height); }).observe(canvas);
   hookInput(M, !!session);
   if (session) { session.client.attach(M); showNetStatus(M, session); }

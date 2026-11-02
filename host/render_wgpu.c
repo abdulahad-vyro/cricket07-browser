@@ -1202,13 +1202,30 @@ EMSCRIPTEN_KEEPALIVE int rc_gpu_pump(int allow_present) {
 
 EMSCRIPTEN_KEEPALIVE void rc_set_canvas_size(int w, int h) { g_window_w = w; g_window_h = h; }
 
+/* What became of the device, for the page (rc_gpu_state): the game thread waits for it in rec_init, so a
+   device that never comes would otherwise leave the page on its loading screen with no word of why. */
+enum { GPU_PENDING = 0, GPU_READY = 1, GPU_FAILED = -1, GPU_LOST = -2 };
+static int g_gpu_state;
+EMSCRIPTEN_KEEPALIVE int rc_gpu_state(void) { return __atomic_load_n(&g_gpu_state, __ATOMIC_ACQUIRE); }
+
+static void on_device_lost(WGPUDevice const *d, WGPUDeviceLostReason why, WGPUStringView msg, void *u1, void *u2) {
+    (void)d; (void)u1; (void)u2;
+    fprintf(stderr, "[wgpu] device lost (reason %d): %.*s\n", (int)why, (int)msg.length, msg.data);
+    if (why != WGPUDeviceLostReason_Destroyed) __atomic_store_n(&g_gpu_state, GPU_LOST, __ATOMIC_RELEASE);
+}
+
 static void on_web_device(WGPURequestDeviceStatus st, WGPUDevice d, WGPUStringView msg, void *u1, void *u2) {
     (void)u1; (void)u2;
-    if (st != WGPURequestDeviceStatus_Success) { fprintf(stderr, "[wgpu] device: %.*s\n", (int)msg.length, msg.data); return; }
+    if (st != WGPURequestDeviceStatus_Success) {
+        fprintf(stderr, "[wgpu] device: %.*s\n", (int)msg.length, msg.data);
+        __atomic_store_n(&g_gpu_state, GPU_FAILED, __ATOMIC_RELEASE);
+        return;
+    }
     g_dev = d;
     g_queue = wgpuDeviceGetQueue(g_dev);
     create_resources();
     __atomic_store_n(&g_ready, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_gpu_state, GPU_READY, __ATOMIC_RELEASE);
 }
 
 static void request_web_adapter(int attempt);
@@ -1218,12 +1235,15 @@ static void on_web_adapter(WGPURequestAdapterStatus st, WGPUAdapter a, WGPUStrin
     if (st != WGPURequestAdapterStatus_Success) {
         fprintf(stderr, "[wgpu] adapter (attempt %d): %.*s\n", attempt, (int)msg.length, msg.data);
         if (attempt < 2) request_web_adapter(attempt + 1);   /* default preference, then the software fallback */
+        else __atomic_store_n(&g_gpu_state, GPU_FAILED, __ATOMIC_RELEASE);
         return;
     }
     if (attempt == 2) fprintf(stderr, "[wgpu] using the browser's software (fallback) adapter: expect it to be slow\n");
     g_adapter = a;
     WGPUDeviceDescriptor dd = WGPU_DEVICE_DESCRIPTOR_INIT;
     dd.uncapturedErrorCallbackInfo.callback = on_error;
+    dd.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
+    dd.deviceLostCallbackInfo.callback = on_device_lost;
     static const WGPUFeatureName bc = WGPUFeatureName_TextureCompressionBC;
     g_gpu_bc = wgpuAdapterHasFeature(g_adapter, bc) && !getenv("RC_NO_BC");   /* DXT textures stay compressed */
     if (g_gpu_bc) { dd.requiredFeatureCount = 1; dd.requiredFeatures = &bc; }
